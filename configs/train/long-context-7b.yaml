@@ -1,0 +1,23 @@
+# Stage 2: extend YoHoGPT-1 to 16k context on repository-level data (~50B tokens).
+run_name: yoho-7b-long
+stage: long_context
+init_from: checkpoints/yoho-7b-pretrain
+out_dir: checkpoints/yoho-7b-long
+seq_len: 16384
+micro_batch: 1
+global_batch_tokens: 4194304
+max_steps: 12000
+lr: 1.0e-4
+min_lr: 1.0e-5
+warmup_steps: 200
+decay: cosine
+precision: bf16
+parallelism: fsdp
+grad_checkpointing: true
+eval_interval: 1000
+ckpt_interval: 1000
+wandb_project: yohogpt
+mixture:
+  - {name: repo-level-stack, path: data/processed/repo-level-stack, weight: 0.85}
+  - {name: fineweb-edu,      path: data/processed/fineweb-edu,      weight: 0.10}
+  - {name: stackexchange,    path: data/processed/stackexchange,    weight: 0.05}

@@ -1,0 +1,23 @@
+# Stage 4: direct preference optimisation on execution-verified pairs.
+run_name: yoho-7b-dpo
+stage: dpo
+init_from: checkpoints/yoho-7b-sft
+tokenizer: artifacts/tokenizer/tokenizer.json
+out_dir: checkpoints/yoho-7b-dpo
+sft_files:
+  - data/raw/dpo
+seq_len: 4096
+micro_batch: 2
+global_batch_tokens: 262144
+max_steps: 1500
+lr: 5.0e-7
+min_lr: 5.0e-8
+warmup_steps: 50
+weight_decay: 0.0
+dpo_beta: 0.1
+precision: bf16
+parallelism: fsdp
+grad_checkpointing: true
+eval_interval: 0
+ckpt_interval: 250
+wandb_project: yohogpt

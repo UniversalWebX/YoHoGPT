@@ -1,0 +1,340 @@
+# YoHoGPT training-data catalogue
+# ==================================================================================
+# Every place YoHoGPT learns from, grouped by training stage, with its license and
+# the mixture weight we sample it at. `yoho download` reads this file.
+#
+# kinds:
+#   hf   - HuggingFace Hub dataset (streamed with `datasets`; some are gated and need
+#          `huggingface-cli login` + accepting the dataset terms on the website)
+#   git  - git repositories cloned shallowly; only files under a permissive license kept
+#   url  - direct download (tar/zip/jsonl)
+#
+# IMPORTANT: licenses and terms change. Before a production run, re-verify each
+# entry's license / terms of use and keep `license_allowlist` in sync with your
+# legal review. Benchmarks listed under `eval` must NEVER be trained on - the
+# `prepare` step decontaminates every training stage against them.
+# ==================================================================================
+
+version: 1
+
+# File-level license filter applied to raw code (from repository license metadata).
+license_allowlist:
+  - mit
+  - apache-2.0
+  - bsd-2-clause
+  - bsd-3-clause
+  - isc
+  - unlicense
+  - cc0-1.0
+  - mpl-2.0
+  - zlib
+  - bsl-1.0
+  - python-2.0
+  - postgresql
+
+# Languages we keep from code corpora (file extension -> language map lives in
+# yohogpt/data/filters.py). Ordered roughly by mixture priority.
+languages:
+  [python, javascript, typescript, java, c, cpp, c-sharp, go, rust, php, ruby, kotlin, swift,
+   scala, shell, sql, html, css, markdown, yaml, json, toml, dockerfile, makefile, lua, r,
+   julia, haskell, ocaml, elixir, dart, zig, solidity, cuda, verilog, jupyter]
+
+stages:
+  # --------------------------------------------------------------------------
+  # Stage 1: pretraining (~85% code, ~15% natural language / math so it can talk)
+  # --------------------------------------------------------------------------
+  pretrain:
+    # ---- source code -----------------------------------------------------
+    - name: starcoderdata
+      kind: hf
+      hf_id: bigcode/starcoderdata
+      text_field: content
+      license: "permissive-only (per-file, from The Stack v1.2); terms of use"
+      gated: true
+      weight: 0.40
+      notes: 86 languages, deduplicated, PII-redacted. Use data_dir per language.
+    - name: the-stack-v2-dedup
+      kind: hf
+      hf_id: bigcode/the-stack-v2-dedup
+      text_field: content
+      license: "per-file permissive/unlicensed; Software Heritage + Stack v2 terms"
+      gated: true
+      weight: 0.20
+      notes: >
+        The HF dataset ships Software Heritage blob IDs; file contents are fetched
+        from the Software Heritage S3 bucket (see the dataset card). Requires AWS creds.
+    - name: github-issues
+      kind: hf
+      hf_id: bigcode/starcoderdata
+      data_dir: github-issues-filtered-structured
+      text_field: content
+      license: "GitHub ToS; see dataset card"
+      gated: true
+      weight: 0.04
+      notes: Real bug reports + maintainer discussion -> teaches debugging dialogue.
+    - name: jupyter-notebooks
+      kind: hf
+      hf_id: bigcode/starcoderdata
+      data_dir: jupyter-structured-clean-dedup
+      text_field: content
+      license: "permissive-only; terms of use"
+      gated: true
+      weight: 0.03
+    - name: git-commits
+      kind: hf
+      hf_id: bigcode/commitpack
+      text_field: new_contents
+      license: "permissive (MIT/Apache/BSD...) per repo"
+      weight: 0.04
+      notes: Commit message + diff pairs; formatted as `<commit_before>...` docs by prepare.
+    - name: code-contests
+      kind: hf
+      hf_id: deepmind/code_contests
+      text_field: description
+      license: cc-by-4.0
+      weight: 0.01
+    - name: apps
+      kind: hf
+      hf_id: codeparrot/apps
+      split: train
+      text_field: question
+      license: mit
+      weight: 0.005
+
+    # ---- curated permissive repos (cloned directly; small but very high quality)
+    - name: curated-repos
+      kind: git
+      license: "checked per repo via LICENSE file against license_allowlist"
+      weight: 0.02
+      repos:
+        - https://github.com/python/cpython
+        - https://github.com/pallets/flask
+        - https://github.com/django/django
+        - https://github.com/psf/requests
+        - https://github.com/numpy/numpy
+        - https://github.com/pytorch/pytorch
+        - https://github.com/rust-lang/rust
+        - https://github.com/golang/go
+        - https://github.com/nodejs/node
+        - https://github.com/microsoft/TypeScript
+        - https://github.com/facebook/react
+        - https://github.com/vuejs/core
+        - https://github.com/sveltejs/svelte
+        - https://github.com/tokio-rs/tokio
+        - https://github.com/redis/redis
+        - https://github.com/postgres/postgres
+        - https://github.com/llvm/llvm-project
+        - https://github.com/kubernetes/kubernetes
+        - https://github.com/fastapi/fastapi
+        - https://github.com/expressjs/express
+
+    # ---- documentation (how libraries are *meant* to be used)
+    - name: language-docs
+      kind: git
+      license: "per repo (PSF / MIT / Apache / CC-BY-SA); see each LICENSE"
+      weight: 0.02
+      repos:
+        - https://github.com/python/cpython          # Doc/ (PSF license)
+        - https://github.com/mdn/content              # MDN Web Docs (CC-BY-SA 2.5)
+        - https://github.com/rust-lang/book           # MIT/Apache-2.0
+        - https://github.com/rust-lang/rust-by-example
+        - https://github.com/golang/website
+        - https://github.com/microsoft/TypeScript-Website
+      include_globs: ["**/*.md", "**/*.rst", "**/*.txt"]
+
+    # ---- natural language + reasoning (so YoHoGPT can *talk*) -------------
+    - name: stackexchange
+      kind: url
+      url: https://archive.org/download/stackexchange
+      license: cc-by-sa-4.0
+      weight: 0.07
+      notes: >
+        Official Stack Exchange data dump. Keep stackoverflow.com, softwareengineering,
+        codereview, unix, serverfault, superuser, dba, datascience. Format each question
+        with its accepted + top-voted answers as one document.
+    - name: fineweb-edu
+      kind: hf
+      hf_id: HuggingFaceFW/fineweb-edu
+      name_config: sample-100BT
+      text_field: text
+      license: odc-by
+      weight: 0.08
+      notes: Educational English web text; gives fluent explanations.
+    - name: wikipedia-en
+      kind: hf
+      hf_id: wikimedia/wikipedia
+      name_config: 20231101.en
+      text_field: text
+      license: cc-by-sa-3.0
+      weight: 0.02
+    - name: open-web-math
+      kind: hf
+      hf_id: open-web-math/open-web-math
+      text_field: text
+      license: odc-by
+      weight: 0.03
+      notes: Math reasoning transfers strongly to algorithmic coding.
+
+  # --------------------------------------------------------------------------
+  # Stage 1 (small budget): for consumer GPUs / models under ~1B params.
+  # A few billion tokens of the highest-value data instead of trillions of
+  # everything: Python-heavy code, Q&A, and educational text.
+  #   yoho download --stage pretrain_small --limit 2000000
+  # --------------------------------------------------------------------------
+  pretrain_small:
+    - name: starcoderdata-python
+      kind: hf
+      hf_id: bigcode/starcoderdata
+      data_dir: python
+      text_field: content
+      license: "permissive-only (per-file); terms of use"
+      gated: true
+      weight: 0.45
+    - name: starcoderdata-javascript
+      kind: hf
+      hf_id: bigcode/starcoderdata
+      data_dir: javascript
+      text_field: content
+      license: "permissive-only (per-file); terms of use"
+      gated: true
+      weight: 0.10
+    - name: stackexchange
+      kind: url
+      url: https://archive.org/download/stackexchange
+      license: cc-by-sa-4.0
+      weight: 0.15
+      notes: Same preparation as the pretrain entry; stackoverflow.com only is enough here.
+    - name: fineweb-edu-small
+      kind: hf
+      hf_id: HuggingFaceFW/fineweb-edu
+      name_config: sample-10BT
+      text_field: text
+      license: odc-by
+      weight: 0.25
+    - name: code-contests
+      kind: hf
+      hf_id: deepmind/code_contests
+      text_field: description
+      license: cc-by-4.0
+      weight: 0.05
+
+  # --------------------------------------------------------------------------
+  # Stage 2: long-context / repository-level continued pretraining
+  # Same code sources, but files of one repo concatenated with <|repo_name|> and
+  # <|file_sep|> so the model learns cross-file reasoning at 16k-32k tokens.
+  # --------------------------------------------------------------------------
+  long_context:
+    - name: repo-level-stack
+      kind: hf
+      hf_id: bigcode/the-stack-v2-dedup
+      text_field: content
+      license: "per-file permissive; terms of use"
+      gated: true
+      weight: 1.0
+      notes: Group by repo, topologically sort files by imports, pack with <|file_sep|>.
+
+  # --------------------------------------------------------------------------
+  # Stage 3: supervised fine-tuning (chat + instruction following + agent use)
+  # format: messages | instruction_response | sharegpt | chatml_text
+  # --------------------------------------------------------------------------
+  sft:
+    - name: self-oss-instruct
+      kind: hf
+      hf_id: bigcode/self-oss-instruct-sc2-exec-filter-50k
+      format: instruction_response
+      fields: {instruction: instruction, response: response}
+      license: odc-by
+      weight: 0.20
+      notes: Execution-filtered (every response's tests pass).
+    - name: magicoder-oss-instruct
+      kind: hf
+      hf_id: ise-uiuc/Magicoder-OSS-Instruct-75K
+      format: instruction_response
+      fields: {instruction: problem, response: solution}
+      license: mit
+      weight: 0.15
+    - name: magicoder-evol-instruct
+      kind: hf
+      hf_id: ise-uiuc/Magicoder-Evol-Instruct-110K
+      format: instruction_response
+      fields: {instruction: instruction, response: response}
+      license: "see dataset card"
+      weight: 0.10
+    - name: code-feedback
+      kind: hf
+      hf_id: m-a-p/CodeFeedback-Filtered-Instruction
+      format: instruction_response
+      fields: {instruction: query, response: answer}
+      license: apache-2.0
+      weight: 0.10
+    - name: opencodeinstruct
+      kind: hf
+      hf_id: nvidia/OpenCodeInstruct
+      format: instruction_response
+      fields: {instruction: input, response: output}
+      license: cc-by-4.0
+      weight: 0.10
+    - name: oasst-top1
+      kind: hf
+      hf_id: OpenAssistant/oasst_top1_2023-08-25
+      format: chatml_text
+      text_field: text
+      license: apache-2.0
+      weight: 0.05
+      notes: Human-written multi-turn conversations -> natural chat behaviour.
+    - name: ultrachat
+      kind: hf
+      hf_id: HuggingFaceH4/ultrachat_200k
+      split: train_sft
+      format: messages
+      license: mit
+      weight: 0.05
+    - name: swe-agent-trajectories
+      kind: hf
+      hf_id: nebius/SWE-agent-trajectories
+      format: messages
+      license: "see dataset card"
+      weight: 0.15
+      notes: >
+        Multi-step repo-editing trajectories. Converted to YoHoGPT tool-call format
+        and filtered to successful (target == true) runs only.
+    - name: yoho-self-play
+      kind: local
+      path: data/sft/self_play.jsonl
+      format: messages
+      license: own
+      weight: 0.10
+      notes: >
+        Generated by `yoho agent` on synthetic + real tasks, kept only when the
+        hidden tests pass (rejection sampling). Grows with every release.
+
+  # --------------------------------------------------------------------------
+  # Stage 4: preference optimisation (DPO) - execution-verified pairs
+  # chosen = passes tests, rejected = fails, same prompt.
+  # --------------------------------------------------------------------------
+  dpo:
+    - name: yoho-exec-pairs
+      kind: local
+      path: data/sft/dpo_pairs.jsonl
+      license: own
+      weight: 0.7
+      notes: Built by `yoho eval --emit-pairs` from sampled solutions.
+    - name: ultrafeedback
+      kind: hf
+      hf_id: HuggingFaceH4/ultrafeedback_binarized
+      split: train_prefs
+      license: mit
+      weight: 0.3
+      notes: General helpfulness preferences to keep chat quality high.
+
+# ------------------------------------------------------------------------------
+# Evaluation only - decontamination targets. Never train on these.
+# ------------------------------------------------------------------------------
+eval:
+  - {name: humaneval, hf_id: openai/openai_humaneval, license: mit}
+  - {name: humaneval-plus, hf_id: evalplus/humanevalplus, license: apache-2.0}
+  - {name: mbpp, hf_id: google-research-datasets/mbpp, license: cc-by-4.0}
+  - {name: mbpp-plus, hf_id: evalplus/mbppplus, license: apache-2.0}
+  - {name: livecodebench, hf_id: livecodebench/code_generation_lite, license: cc}
+  - {name: swe-bench-verified, hf_id: princeton-nlp/SWE-bench_Verified, license: mit}
+  - {name: ds-1000, hf_id: xlangai/DS-1000, license: cc-by-sa-4.0}

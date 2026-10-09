@@ -1,0 +1,35 @@
+# YoHoGPT-small on one 4 GB GPU (GTX 1050 Ti / GTX 1650 Super).
+# ~2B tokens = compute-optimal for 100M params. Estimated time (`yoho plan`, 40% MFU):
+#   GTX 1050 Ti (fp32)       ~25 days
+#   GTX 1650 Super (fp16)    ~6 days
+# Measure on your card first:  yoho benchmark configs/train/pretrain-4gb.yaml --find-batch
+run_name: yoho-small-pretrain
+stage: pretrain
+model: configs/model/yoho-small.yaml
+tokenizer: artifacts/tokenizer-32k/tokenizer.json
+out_dir: checkpoints/yoho-small-pretrain
+seq_len: 1024
+micro_batch: 2                # 4 usually fits with fp16 (GTX 16xx); `yoho benchmark --find-batch`
+global_batch_tokens: 262144   # 256k tokens/step via gradient accumulation
+max_steps: 7630               # ~2B tokens
+lr: 6.0e-4
+min_lr: 6.0e-5
+warmup_steps: 300
+decay: wsd
+weight_decay: 0.1
+optimizer: adamw              # 1.6 GB of weights+grads+state at 100M; use adafactor to go bigger
+precision: auto               # fp32 on GTX 10xx (no fast fp16), fp16 on GTX 16xx/RTX 20xx, bf16 on RTX 30xx+
+grad_checkpointing: true      # trades ~25% compute for most activation memory
+loss_chunk_tokens: 1024       # never hold full 32k-vocab logits
+prefetch_batches: 4
+compile: false                # Pascal (GTX 10xx) can't run torch.compile; try true on RTX cards
+eval_interval: 250
+eval_batches: 20
+ckpt_interval: 250            # checkpoint often: long runs on a desktop get interrupted
+keep_checkpoints: 2
+mixture:
+  - {name: starcoderdata-python,     path: data/processed/starcoderdata-python,     weight: 0.45}
+  - {name: starcoderdata-javascript, path: data/processed/starcoderdata-javascript, weight: 0.10}
+  - {name: stackexchange,            path: data/processed/stackexchange,            weight: 0.15}
+  - {name: fineweb-edu-small,        path: data/processed/fineweb-edu-small,        weight: 0.25}
+  - {name: code-contests,            path: data/processed/code-contests,            weight: 0.05}
