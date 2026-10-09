@@ -1,0 +1,19 @@
+# End-to-end CPU smoke test (runs in ~1 minute). See scripts/smoke_test.sh.
+run_name: smoke
+stage: pretrain
+model: configs/model/yoho-tiny.yaml
+out_dir: checkpoints/smoke
+mixture:
+  - {name: sample, path: data/processed/sample, weight: 1.0}
+seq_len: 128
+micro_batch: 8
+global_batch_tokens: 1024
+lr: 3.0e-3
+min_lr: 3.0e-4
+warmup_steps: 10
+max_steps: 60
+precision: fp32
+log_interval: 10
+eval_interval: 30
+eval_batches: 2
+ckpt_interval: 30

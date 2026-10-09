@@ -1,0 +1,8 @@
+# ~30M params (mostly embeddings). For CPU smoke tests and CI only.
+name: yoho-tiny
+vocab_size: 49152
+d_model: 256
+n_layers: 4
+n_heads: 8
+n_kv_heads: 4
+max_seq_len: 2048

@@ -1,0 +1,22 @@
+# Stage 3: supervised fine-tuning for chat, instruction following and tool use.
+run_name: yoho-7b-sft
+stage: sft
+init_from: checkpoints/yoho-7b-long
+tokenizer: artifacts/tokenizer/tokenizer.json
+out_dir: checkpoints/yoho-7b-sft
+sft_files:
+  - data/raw/sft      # every SFT source downloaded by `yoho download --stage sft`
+seq_len: 16384
+micro_batch: 1
+global_batch_tokens: 1048576
+max_steps: 6000       # ~3 epochs over ~2B tokens
+lr: 2.0e-5
+min_lr: 2.0e-6
+warmup_steps: 100
+weight_decay: 0.0
+precision: bf16
+parallelism: fsdp
+grad_checkpointing: true
+eval_interval: 500
+ckpt_interval: 500
+wandb_project: yohogpt

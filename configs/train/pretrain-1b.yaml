@@ -1,0 +1,35 @@
+# YoHoGPT-1B: 1T tokens. 8 nodes x 8 H100 ~ 3.5 days at 40% MFU.
+run_name: yoho-1b-pretrain
+stage: pretrain
+model: configs/model/yoho-1b.yaml
+out_dir: checkpoints/yoho-1b-pretrain
+seq_len: 4096
+micro_batch: 8
+global_batch_tokens: 2097152     # 2M tokens / step
+max_steps: 476837                # ~1T tokens
+lr: 4.0e-4
+min_lr: 4.0e-5
+warmup_steps: 2000
+decay: wsd                       # warmup-stable-decay: lets us branch & anneal any checkpoint
+weight_decay: 0.1
+precision: bf16
+parallelism: ddp
+compile: true
+eval_interval: 2000
+ckpt_interval: 2000
+wandb_project: yohogpt
+# Mixture weights mirror data/sources.yaml (pretrain stage). Paths are `yoho prepare` outputs.
+mixture:
+  - {name: starcoderdata,      path: data/processed/starcoderdata,      weight: 0.40}
+  - {name: the-stack-v2-dedup, path: data/processed/the-stack-v2-dedup, weight: 0.20}
+  - {name: github-issues,      path: data/processed/github-issues,      weight: 0.04}
+  - {name: jupyter-notebooks,  path: data/processed/jupyter-notebooks,  weight: 0.03}
+  - {name: git-commits,        path: data/processed/git-commits,        weight: 0.04}
+  - {name: code-contests,      path: data/processed/code-contests,      weight: 0.01}
+  - {name: apps,               path: data/processed/apps,               weight: 0.005}
+  - {name: curated-repos,      path: data/processed/curated-repos,      weight: 0.02}
+  - {name: language-docs,      path: data/processed/language-docs,      weight: 0.02}
+  - {name: stackexchange,      path: data/processed/stackexchange,      weight: 0.07}
+  - {name: fineweb-edu,        path: data/processed/fineweb-edu,        weight: 0.08}
+  - {name: wikipedia-en,       path: data/processed/wikipedia-en,       weight: 0.02}
+  - {name: open-web-math,      path: data/processed/open-web-math,      weight: 0.03}

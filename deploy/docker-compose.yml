@@ -1,0 +1,60 @@
+# Single-host production stack:
+#   nginx (TLS, :443)  ->  yoho gateway (:8080, auth, rate limits, agent runs)  ->  vLLM (:8000, GPU)
+#
+#   yoho export-hf --checkpoint checkpoints/yoho-7b-dpo --tokenizer artifacts/tokenizer --out artifacts/hf/yoho-7b
+#   docker build -f deploy/Dockerfile.sandbox -t yohogpt/sandbox:latest .
+#   YOHO_API_KEYS=$(openssl rand -hex 24) docker compose -f deploy/docker-compose.yml up -d
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.6.3
+    command: >
+      --model /models/yoho-7b --served-model-name yohogpt
+      --max-model-len 16384 --gpu-memory-utilization 0.92
+      --enable-prefix-caching --api-key ${YOHO_UPSTREAM_KEY:-internal-only}
+    volumes: ["../artifacts/hf:/models:ro"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    networks: [backend]          # not reachable from outside
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "localhost:8000/health"]
+      interval: 30s
+      start_period: 300s
+
+  gateway:
+    build: {context: .., dockerfile: deploy/Dockerfile}
+    command: >
+      yoho serve --backend openai --upstream http://vllm:8000 --model-name yohogpt
+      --port 8080 --sandbox docker
+    environment:
+      YOHO_API_KEYS: ${YOHO_API_KEYS:?set YOHO_API_KEYS}
+      YOHO_UPSTREAM_KEY: ${YOHO_UPSTREAM_KEY:-internal-only}
+      YOHO_RATE_LIMIT: "120"
+      YOHO_MAX_RUNS: "8"
+      YOHO_WORKSPACES: /app/workspaces
+    volumes:
+      # The gateway starts one sandbox container per agent run. Mounting the Docker
+      # socket gives the gateway root-equivalent access to this host: run it on a
+      # dedicated machine, or use the k8s deployment with a rootless dind sidecar.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workspaces:/app/workspaces
+    user: root
+    depends_on: {vllm: {condition: service_healthy}}
+    networks: [backend, frontend]
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports: ["443:443", "80:80"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on: [gateway]
+    networks: [frontend]
+
+volumes:
+  workspaces:
+
+networks:
+  frontend: {}
+  backend: {internal: true}
