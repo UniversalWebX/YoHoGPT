@@ -8,7 +8,7 @@ YoHoGPT is a large language model built only for software engineering, in the sp
 | **Tokenizer** | Byte-level BPE with code-aware splitting, plus special tokens for ChatML, fill-in-the-middle (FIM) and tool calls | `yohogpt/tokenizer/` |
 | **Training data** | A list of every source with its license and mixture weight, covering pretraining, long context, SFT, DPO and eval decontamination | [`data/sources.yaml`](data/sources.yaml) |
 | **Data pipeline** | Download, license filter, quality filters, secret/PII redaction, exact and MinHash dedup, benchmark decontamination, FIM, then tokenize and pack | `yohogpt/data/` |
-| **Training** | One trainer for pretraining, long-context, SFT and DPO, with DDP/FSDP, bf16, grad accumulation and checkpointing, and resume on multi-node runs | `yohogpt/train/`, `configs/train/` |
+| **Training** | One trainer for pretraining, long-context, SFT and DPO, with DDP/FSDP, grad accumulation and checkpointing, and resume on multi-node runs. Precision is picked per GPU, the loss is computed in chunks, and there are low-memory optimizers. Includes a planner (`yoho plan`) and a benchmark (`yoho benchmark`) | `yohogpt/train/`, `yohogpt/plan.py`, `configs/train/` |
 | **Inference** | KV-cached sampling (temperature, top-p, top-k, repetition penalty, stop strings), streaming, and export to HF format for vLLM | `yohogpt/inference/`, `yohogpt/export_hf.py` |
 | **Agent** | A Devin-style loop that plans, calls tools and observes the results. Tools: bash, read/write/edit files, search, finish. Runs in a Docker sandbox | `yohogpt/agent/` |
 | **Networking** | OpenAI-compatible REST API with SSE streaming, tool calling and FIM completions. Agent runs over REST, SSE and WebSocket. API keys, rate limiting, Prometheus metrics. nginx, docker-compose and Kubernetes configs. NCCL multi-node training | `yohogpt/server/`, `deploy/`, `scripts/`, [`docs/NETWORKING.md`](docs/NETWORKING.md) |
@@ -16,13 +16,15 @@ YoHoGPT is a large language model built only for software engineering, in the sp
 
 The release plan, model sizes and compute budget are in [`docs/RELEASE_PLAN.md`](docs/RELEASE_PLAN.md). The system design is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+**Training on a consumer GPU** (GTX 1050 Ti, GTX 1650, RTX 3060, ...): see [`docs/SMALL_GPU.md`](docs/SMALL_GPU.md). `yoho plan --gpu "GTX 1050 Ti" --days 30` tells you what fits on a card and how long it will take. `yoho benchmark` measures the real numbers on your machine.
+
 > **A note on expectations.** The code here is complete and tested end to end. It is not a trained model. To get a YoHoGPT that talks fluently and codes well, you have to run this pipeline at scale. For the 7B release that means about 2T tokens on roughly 256 H100s for about 10 days. Everything you need for that run is in this repo. The smoke test below runs the same pipeline on a CPU at toy scale.
 
 ## Quickstart (CPU, ~2 minutes, no downloads)
 
 ```bash
 pip install -e ".[serve,dev]"
-pytest                       # 43 tests: model, tokenizer, data, training, server, agent, HF export
+pytest                       # 55 tests: model, tokenizer, data, training, optimizations, server, agent, HF export
 scripts/smoke_test.sh        # data -> tokenizer -> pretrain -> SFT -> API server -> chat/FIM/agent
 ```
 
@@ -92,11 +94,11 @@ for chunk in client.chat.completions.create(model="yohogpt", stream=True,
 ## Repository layout
 
 ```
-configs/model/       yoho-tiny | yoho-1b | yoho-7b (release 1) | yoho-34b
-configs/train/       smoke | pretrain-1b | pretrain-7b | long-context-7b | sft-7b | dpo-7b
+configs/model/       yoho-tiny | yoho-small (4 GB GPUs) | yoho-1b | yoho-7b (release 1) | yoho-34b
+configs/train/       smoke | pretrain-4gb | pretrain-1b | pretrain-7b | long-context-7b | sft-7b | dpo-7b
 data/sources.yaml    the training-data catalogue
 deploy/              Dockerfile, sandbox image, docker-compose, nginx, Kubernetes
-docs/                ARCHITECTURE, RELEASE_PLAN, NETWORKING
+docs/                ARCHITECTURE, RELEASE_PLAN, NETWORKING, SMALL_GPU
 scripts/             smoke test, multi-node launcher, SLURM job, release pipeline
 yohogpt/             the Python package (CLI: `yoho`)
 tests/               pytest suite (CPU only)

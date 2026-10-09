@@ -190,6 +190,8 @@ class YohoGPT(nn.Module):
         start_pos: int = 0,
         use_cache: bool = False,
         last_only: bool = False,
+        return_logits: bool = True,
+        loss_chunk: int = 0,
     ):
         """Run the model.
 
@@ -199,6 +201,9 @@ class YohoGPT(nn.Module):
             start_pos: absolute position of ``idx[:, 0]`` (for KV-cached decoding).
             use_cache: read/write ``self.caches`` (call ``setup_cache`` first).
             last_only: only compute logits for the final position (decoding).
+            return_logits: if False (training), compute the loss in chunks of
+                ``loss_chunk`` tokens without ever materialising the full
+                (tokens x vocab) logits; returns ``(None, loss)``.
         Returns:
             (logits, loss) where loss is ``None`` when ``targets`` is ``None``.
         """
@@ -219,6 +224,8 @@ class YohoGPT(nn.Module):
                 x = layer(x, cos, sin, cache, start_pos)
         x = self.norm(x)
 
+        if targets is not None and not return_logits:
+            return None, self.chunked_loss(x, targets, loss_chunk)
         if last_only:
             x = x[:, -1:, :]
         logits = self.lm_head(x)
@@ -230,21 +237,34 @@ class YohoGPT(nn.Module):
             )
         return logits, loss
 
+    def _ce_sum(self, h: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return F.cross_entropy(self.lm_head(h).float(), t, ignore_index=-100, reduction="sum")
+
+    def chunked_loss(self, h: torch.Tensor, targets: torch.Tensor, chunk: int = 0) -> torch.Tensor:
+        """Mean next-token cross-entropy, computed ``chunk`` tokens at a time.
+
+        Each chunk's logits are recomputed in backward (activation checkpointing), so
+        peak memory is O(chunk x vocab) instead of O(batch x seq x vocab). With a
+        49k vocabulary and 16k tokens per micro-batch that is ~3 GB saved.
+        """
+        h = h.reshape(-1, h.size(-1))
+        t = targets.reshape(-1)
+        chunk = chunk if chunk > 0 else h.size(0)
+        total = torch.zeros((), device=h.device, dtype=torch.float32)
+        for i in range(0, h.size(0), chunk):
+            hc, tc = h[i : i + chunk], t[i : i + chunk]
+            if torch.is_grad_enabled() and h.requires_grad:
+                total = total + checkpoint(self._ce_sum, hc, tc, use_reentrant=False)
+            else:
+                total = total + self._ce_sum(hc, tc)
+        return total / (t != -100).sum().clamp(min=1)
+
     # ---------------------------------------------------------- optimiser
-    def configure_optimizer(self, lr: float, weight_decay: float, betas: tuple[float, float], device_type: str):
-        decay, no_decay = [], []
-        seen = set()
-        for _, p in self.named_parameters():
-            if not p.requires_grad or id(p) in seen:
-                continue
-            seen.add(id(p))
-            (decay if p.dim() >= 2 else no_decay).append(p)
-        groups = [
-            {"params": decay, "weight_decay": weight_decay},
-            {"params": no_decay, "weight_decay": 0.0},
-        ]
-        kwargs = {"fused": True} if device_type == "cuda" else {}
-        return torch.optim.AdamW(groups, lr=lr, betas=betas, **kwargs)
+    def configure_optimizer(self, lr: float, weight_decay: float, betas: tuple[float, float], device_type: str,
+                            name: str = "adamw"):
+        from .train.optim import make_optimizer
+
+        return make_optimizer(name, self, lr, weight_decay, betas, device_type)
 
     def flops_per_token(self, seq_len: int) -> float:
         """Approximate training FLOPs per token (6N + attention term), for MFU logging."""

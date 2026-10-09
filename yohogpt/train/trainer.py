@@ -16,7 +16,9 @@ import copy
 import json
 import math
 import os
+import queue
 import sys
+import threading
 import time
 from functools import partial
 from pathlib import Path
@@ -25,12 +27,73 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .. import hardware
 from ..config import ModelConfig, TrainConfig, parse_overrides
 from ..model import Block, YohoGPT
 from .checkpoint import latest_checkpoint, resolve_checkpoint, save_checkpoint
 from .distributed import DistInfo, all_reduce_mean, cleanup, setup_distributed
+from .optim import make_optimizer
 
-PEAK_FLOPS = float(os.environ.get("YOHO_PEAK_FLOPS", 989e12))  # H100 SXM dense bf16
+
+
+def resolve_runtime(cfg: TrainConfig, info: DistInfo, log: bool = True) -> torch.dtype:
+    """Adapt the config to the hardware: precision, torch.compile, FSDP availability."""
+    say = (lambda msg: print(f"[yoho] {msg}", file=sys.stderr)) if log and info.is_main else (lambda msg: None)
+    if cfg.precision == "auto":
+        cfg.precision = hardware.best_precision(info.device)
+        say(f"precision=auto -> {cfg.precision}")
+    if info.device.type != "cuda" and cfg.precision == "fp16":
+        cfg.precision = "fp32"
+    if info.device.type == "cuda" and cfg.precision == "bf16" and torch.cuda.get_device_capability(info.device) < (8, 0):
+        say("bf16 is not supported in hardware on this GPU (needs sm_80+); using "
+            f"{hardware.best_precision(info.device)}")
+        cfg.precision = hardware.best_precision(info.device)
+    if cfg.compile and not hardware.supports_compile(info.device):
+        say("torch.compile needs a GPU with compute capability >= 7.0; disabling")
+        cfg.compile = False
+    if cfg.parallelism == "fsdp" and info.device.type != "cuda":
+        say("FSDP needs CUDA; falling back to DDP on this device")
+        cfg.parallelism = "ddp"
+    if info.device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    return hardware.dtype_of(cfg.precision)
+
+
+def peak_flops(info: DistInfo, precision: str) -> float | None:
+    env = os.environ.get("YOHO_PEAK_FLOPS")
+    return float(env) if env else hardware.peak_flops(info.device, precision)
+
+
+class Prefetcher:
+    """Builds the next batches on a background thread (pinned memory on CUDA) so the
+    accelerator never waits on memmap reads / numpy sampling."""
+
+    def __init__(self, get_batch, start_step: int, max_steps: int, grad_accum: int, device: torch.device,
+                 depth: int) -> None:
+        self.q: "queue.Queue" = queue.Queue(maxsize=max(1, depth))
+        pin = device.type == "cuda"
+
+        def work() -> None:
+            try:
+                for step in range(start_step, max_steps):
+                    for micro in range(grad_accum):
+                        x, y = get_batch(step, micro)
+                        if pin:
+                            x, y = x.pin_memory(), y.pin_memory()
+                        self.q.put((step, micro, x, y))
+            except BaseException as e:  # surface data errors in the training thread
+                self.q.put(e)
+
+        threading.Thread(target=work, daemon=True, name="yoho-prefetch").start()
+
+    def __call__(self, step: int, micro: int):
+        item = self.q.get()
+        if isinstance(item, BaseException):
+            raise item
+        s, m, x, y = item
+        assert (s, m) == (step, micro), f"prefetcher out of sync: got {(s, m)}, expected {(step, micro)}"
+        return x, y
 
 
 # ------------------------------------------------------------------ schedule
@@ -170,17 +233,7 @@ def dpo_loss(policy, ref, x, y, beta: float) -> tuple[torch.Tensor, dict]:
 def train(cfg: TrainConfig) -> dict:
     info = setup_distributed()
     torch.manual_seed(cfg.seed + info.rank)
-    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[cfg.precision]
-    if info.device.type == "cpu" and dtype == torch.float16:
-        dtype = torch.float32
-    if info.device.type == "cuda":
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-
-    if cfg.parallelism == "fsdp" and info.device.type != "cuda":
-        if info.is_main:
-            print("[yoho] FSDP needs CUDA; falling back to DDP on this device", file=sys.stderr)
-        cfg.parallelism = "ddp"
+    dtype = resolve_runtime(cfg, info)
 
     model, model_cfg, start_step, state = build_model(cfg, info)
     ref_model = None
@@ -192,9 +245,10 @@ def train(cfg: TrainConfig) -> dict:
     n_params = model.num_params()
     flops_per_token = model.flops_per_token(cfg.seq_len)
     model = wrap_model(model, cfg, info, dtype)
-    optimizer = _raw(model).configure_optimizer(cfg.lr, cfg.weight_decay, (cfg.beta1, cfg.beta2), info.device.type) \
-        if cfg.parallelism != "fsdp" or not info.enabled else \
-        torch.optim.AdamW(model.parameters(), lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
+    fsdp = cfg.parallelism == "fsdp" and info.enabled
+    optimizer = make_optimizer(cfg.optimizer, model, cfg.lr, cfg.weight_decay, (cfg.beta1, cfg.beta2),
+                               info.device.type, grouped=not fsdp)
+    peak = peak_flops(info, cfg.precision)
 
     resume = latest_checkpoint(cfg.out_dir)
     if resume is not None and (resume / "optim.pt").exists():
@@ -208,6 +262,8 @@ def train(cfg: TrainConfig) -> dict:
     get_batch = build_data(cfg, info)
     tokens_per_micro = cfg.micro_batch * cfg.seq_len
     grad_accum = max(1, cfg.global_batch_tokens // (tokens_per_micro * info.world_size))
+    next_batch = Prefetcher(get_batch, start_step, cfg.max_steps, grad_accum, info.device, cfg.prefetch_batches) \
+        if cfg.prefetch_batches > 0 else get_batch
     use_amp = dtype != torch.float32 and not (cfg.parallelism == "fsdp" and info.enabled)
     autocast = (lambda: torch.autocast(info.device.type, dtype=dtype)) if use_amp else contextlib.nullcontext
     scaler = torch.amp.GradScaler(enabled=dtype == torch.float16 and info.device.type == "cuda")
@@ -221,7 +277,8 @@ def train(cfg: TrainConfig) -> dict:
         log_file = open(out_dir / "log.jsonl", "a")
         print(f"[yoho] stage={cfg.stage} params={n_params / 1e6:.1f}M world={info.world_size} "
               f"grad_accum={grad_accum} tokens/step={tokens_per_micro * grad_accum * info.world_size:,} "
-              f"device={info.device} start_step={start_step}", file=sys.stderr)
+              f"device={info.device} precision={cfg.precision} optimizer={cfg.optimizer} "
+              f"start_step={start_step}", file=sys.stderr)
         if cfg.wandb_project:
             import wandb
 
@@ -230,7 +287,7 @@ def train(cfg: TrainConfig) -> dict:
     def compute_loss(x, y):
         if ref_model is not None:
             return dpo_loss(model, ref_model, x, y, cfg.dpo_beta)
-        _, loss = model(x, y)
+        _, loss = model(x, y, return_logits=False, loss_chunk=cfg.loss_chunk_tokens)
         return loss, {}
 
     @torch.no_grad()
@@ -257,7 +314,7 @@ def train(cfg: TrainConfig) -> dict:
         total_loss = torch.zeros((), device=info.device)
         extras: dict = {}
         for micro in range(grad_accum):
-            x, y = get_batch(step, micro)
+            x, y = next_batch(step, micro)
             x, y = x.to(info.device, non_blocking=True), y.to(info.device, non_blocking=True)
             sync = micro == grad_accum - 1 or not info.enabled or not hasattr(model, "no_sync")
             ctx = contextlib.nullcontext() if sync else model.no_sync()
@@ -283,7 +340,7 @@ def train(cfg: TrainConfig) -> dict:
             t0 = time.time()
             steps_done = cfg.log_interval if step > start_step else 1
             tps = tokens_per_micro * grad_accum * info.world_size * steps_done / max(dt, 1e-9)
-            mfu = flops_per_token * tps / (PEAK_FLOPS * info.world_size) if info.device.type == "cuda" else 0.0
+            mfu = flops_per_token * tps / (peak * info.world_size) if peak else 0.0
             last = {"step": step, "loss": round(loss_val, 4), "lr": lr, "grad_norm": round(float(grad_norm), 3),
                     "tokens_seen": tokens_seen, "tok_per_s": int(tps), "mfu": round(mfu, 3), **extras}
             if info.is_main:

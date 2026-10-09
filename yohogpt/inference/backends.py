@@ -41,9 +41,11 @@ class LocalBackend:
         from ..tokenizer import YohoTokenizer
         from ..train.checkpoint import load_model
 
+        from .. import hardware
+
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        if dtype == "auto":
-            tdtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
+        if dtype == "auto":  # bf16 on Ampere+, fp16 on Volta/Turing, fp32 on Pascal (e.g. GTX 10xx) and CPU
+            tdtype = hardware.dtype_of(hardware.best_precision(torch.device(device)))
         else:
             tdtype = getattr(torch, dtype)
         self.tok = YohoTokenizer.load(tokenizer)

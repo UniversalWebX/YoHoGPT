@@ -4,6 +4,8 @@
     yoho download    ...               fetch raw data             (yohogpt.data.download)
     yoho train-tokenizer ...           train the BPE tokenizer    (yohogpt.tokenizer.train_tokenizer)
     yoho prepare     ...               filter/dedup/tokenize      (yohogpt.data.prepare)
+    yoho plan --gpu NAME --days N      what model size fits your hardware + time budget
+    yoho benchmark CONFIG [--find-batch]   measured tokens/s, memory and ETA on this machine
     yoho train CONFIG [k=v ...]        pretrain / SFT / DPO       (yohogpt.train.trainer)
     yoho export-hf   ...               export for vLLM / llama.cpp
     yoho serve       ...               run the API server
@@ -104,6 +106,14 @@ def main(argv: list[str] | None = None) -> None:
         return m(rest)
     if cmd == "train":
         from .train.trainer import main as m
+
+        return m(rest)
+    if cmd == "plan":
+        from .plan import main as m
+
+        return m(rest)
+    if cmd == "benchmark":
+        from .train.benchmark import main as m
 
         return m(rest)
     if cmd == "export-hf":

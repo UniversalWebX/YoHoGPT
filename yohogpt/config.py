@@ -127,12 +127,15 @@ class TrainConfig:
     beta2: float = 0.95
     grad_clip: float = 1.0
     dpo_beta: float = 0.1
+    optimizer: str = "adamw"  # adamw | adamw8bit | lion | adafactor  (see yohogpt/train/optim.py)
 
     # system
-    precision: str = "bf16"  # bf16 | fp16 | fp32
+    precision: str = "auto"  # auto | bf16 | fp16 | fp32  (auto: best the GPU supports)
     parallelism: str = "ddp"  # ddp | fsdp
-    compile: bool = False
+    compile: bool = False  # ignored (with a warning) on GPUs that can't run Triton (< sm_70)
     grad_checkpointing: bool = False
+    loss_chunk_tokens: int = 2048  # chunked cross-entropy; 0 = materialise all logits
+    prefetch_batches: int = 4  # batches prepared by a background thread; 0 = off
     seed: int = 1337
 
     # bookkeeping

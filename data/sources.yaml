@@ -176,6 +176,49 @@ stages:
       notes: Math reasoning transfers strongly to algorithmic coding.
 
   # --------------------------------------------------------------------------
+  # Stage 1 (small budget): for consumer GPUs / models under ~1B params.
+  # A few billion tokens of the highest-value data instead of trillions of
+  # everything: Python-heavy code, Q&A, and educational text.
+  #   yoho download --stage pretrain_small --limit 2000000
+  # --------------------------------------------------------------------------
+  pretrain_small:
+    - name: starcoderdata-python
+      kind: hf
+      hf_id: bigcode/starcoderdata
+      data_dir: python
+      text_field: content
+      license: "permissive-only (per-file); terms of use"
+      gated: true
+      weight: 0.45
+    - name: starcoderdata-javascript
+      kind: hf
+      hf_id: bigcode/starcoderdata
+      data_dir: javascript
+      text_field: content
+      license: "permissive-only (per-file); terms of use"
+      gated: true
+      weight: 0.10
+    - name: stackexchange
+      kind: url
+      url: https://archive.org/download/stackexchange
+      license: cc-by-sa-4.0
+      weight: 0.15
+      notes: Same preparation as the pretrain entry; stackoverflow.com only is enough here.
+    - name: fineweb-edu-small
+      kind: hf
+      hf_id: HuggingFaceFW/fineweb-edu
+      name_config: sample-10BT
+      text_field: text
+      license: odc-by
+      weight: 0.25
+    - name: code-contests
+      kind: hf
+      hf_id: deepmind/code_contests
+      text_field: description
+      license: cc-by-4.0
+      weight: 0.05
+
+  # --------------------------------------------------------------------------
   # Stage 2: long-context / repository-level continued pretraining
   # Same code sources, but files of one repo concatenated with <|repo_name|> and
   # <|file_sep|> so the model learns cross-file reasoning at 16k-32k tokens.
